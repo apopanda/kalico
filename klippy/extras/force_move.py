@@ -31,6 +31,31 @@ def calc_move_time(dist, speed, accel):
     cruise_t = (dist - accel_decel_d) / speed
     return axis_r, accel_t, cruise_t, speed
 
+def normalize(distances=None):
+    if distances is None:
+        distances = []
+    magnitude = magnitude_v(distances)
+    return list(map(lambda dist: dist / magnitude, distances))
+
+def magnitude_v(distances):
+    return math.sqrt(sum([d * d for d in distances[:3]]))
+
+def calc_moves_time(speed, accel, dist=None):
+    if dist is None:
+        dist = [0., 0., 0.]
+    axis_r = normalize(dist)
+    distances = list(map(lambda distance: abs(distance), dist))
+    magnitude = magnitude_v(distances)
+
+    if not accel or not magnitude:
+        return axis_r, 0., magnitude / speed, speed
+    max_cruise_v2 = magnitude * accel
+    if max_cruise_v2 < speed**2:
+        speed = math.sqrt(max_cruise_v2)
+    accel_t = speed / accel
+    accel_decel_d = accel_t * speed
+    cruise_t = (magnitude - accel_decel_d) / speed
+    return axis_r, accel_t, cruise_t, speed
 
 class ForceMove:
     def __init__(self, config):
@@ -41,9 +66,14 @@ class ForceMove:
         self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
         self.trapq_append = ffi_lib.trapq_append
         self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
-        self.stepper_kinematics = ffi_main.gc(
-            ffi_lib.cartesian_stepper_alloc(b"x"), ffi_lib.free
-        )
+        self.stepper_kinematics = {
+            'x': ffi_main.gc(
+                ffi_lib.cartesian_stepper_alloc(b'x'), ffi_lib.free),
+            'y': ffi_main.gc(
+                ffi_lib.cartesian_stepper_alloc(b'y'), ffi_lib.free),
+            'z': ffi_main.gc(
+                ffi_lib.cartesian_stepper_alloc(b'z'), ffi_lib.free)
+        }
         # Register commands
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command(
@@ -126,6 +156,34 @@ class ForceMove:
         toolhead.note_mcu_movequeue_activity(print_time)
         toolhead.dwell(accel_t + cruise_t + accel_t)
         toolhead.flush_step_generation()
+
+    def manual_move_multiple(self, speed, dist=[], accel=0.):
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.flush_step_generation()
+        steppers = toolhead.get_kinematics().get_steppers()
+        axis_map = {'X': 0, 'Y': 1, 'Z': 2}
+
+        for stepper in steppers:
+            for axis, pos in axis_map.items():
+                if stepper.is_active_axis(axis.lower()):
+                    stepper.set_stepper_kinematics(self.stepper_kinematics[axis.lower()])
+            stepper.set_trapq(self.trapq)
+            stepper.set_position((0., 0., 0.))
+        axis_r, accel_t, cruise_t, cruise_v = calc_moves_time(speed, accel, dist)
+        print_time = toolhead.get_last_move_time()
+        self.trapq_append(self.trapq, print_time, accel_t, cruise_t, accel_t,
+                          0., 0., 0.,
+                          axis_r[axis_map['X']], axis_r[axis_map['Y']], axis_r[axis_map['Z']],
+                          0., cruise_v, accel)
+        print_time = print_time + accel_t + cruise_t + accel_t
+        toolhead.note_mcu_movequeue_activity(print_time)
+        toolhead.dwell(accel_t + cruise_t + accel_t)
+        toolhead.flush_step_generation()
+        for stepper in steppers:
+            stepper.set_trapq(stepper.get_pre_jog_trapq())
+            stepper.set_stepper_kinematics(stepper.get_pre_jog_kinematics())
+            stepper.reset_pre_jog_kinematics()
+            stepper.reset_pre_jog_trapq()
 
     def _lookup_stepper(self, gcmd):
         name = gcmd.get("STEPPER")

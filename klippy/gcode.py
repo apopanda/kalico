@@ -149,11 +149,13 @@ class GCodeDispatch:
         self.is_fileinput = not not printer.get_start_args().get("debuginput")
         printer.register_event_handler("klippy:ready", self._handle_ready)
         printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
+        printer.register_event_handler("toolhead:jog_mode", self._handle_jog_mode)
         printer.register_event_handler(
             "klippy:disconnect", self._handle_disconnect
         )
         # Command handling
         self.is_printer_ready = False
+        self.is_printer_jogging = printer.is_jogging()
         self.mutex = printer.get_reactor().mutex()
         self.output_callbacks = []
         self.base_gcode_handlers = self.gcode_handlers = {}
@@ -287,6 +289,13 @@ class GCodeDispatch:
         self.gcode_handlers = self.ready_gcode_handlers
         self._build_status_commands()
         self._respond_state("Ready")
+
+    def _handle_jog_mode(self):
+        self.is_printer_jogging = not self.printer.is_jogging()
+        if self.is_printer_jogging:
+            self._respond_state("Jogging")
+        else:
+            self._handle_ready()
 
     # Parse input into commands
     args_r = re.compile("([A-Z_]+|[A-Z*])")
@@ -486,10 +495,12 @@ class GCodeDispatch:
         gcmd.respond_info(gcmd.get_commandline(), log=False)
 
     cmd_STATUS_help = "Report the printer status"
-
     def cmd_STATUS(self, gcmd):
-        if self.is_printer_ready:
+        if self.is_printer_ready and not self.is_printer_jogging:
             self._respond_state("Ready")
+            return
+        if self.is_printer_ready and self.is_printer_jogging:
+            self._respond_state("Jogging")
             return
         msg = self.printer.get_state_message()[0]
         msg = msg.rstrip() + "\nKlipper state: Not ready"

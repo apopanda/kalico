@@ -79,6 +79,11 @@ config, and restart the host software.
 Printer is shutdown
 """
 
+message_jogging = """
+Printer is in jog mode. 
+Disable jog mode with the JOG gcode command 
+to resume scheduler operation. 
+"""
 
 class WaitInterruption(gcode.CommandError):
     pass
@@ -169,6 +174,7 @@ class Printer:
         self.reactor.register_callback(self._connect)
         self.state_message = message_startup
         self.in_shutdown_state = False
+        self.in_jogging_state = False
         self.run_result = None
         self.event_handlers = {}
         self.printer_modules: dict[str, PrinterModule] = {}
@@ -226,6 +232,8 @@ class Printer:
             category = "startup"
         elif self.in_shutdown_state:
             category = "shutdown"
+        elif self.in_jogging_state:
+            category = "jogging"
         else:
             category = "error"
         return self.state_message, category
@@ -233,8 +241,11 @@ class Printer:
     def is_shutdown(self):
         return self.in_shutdown_state
 
+    def is_jogging(self):
+        return self.in_jogging_state
+
     def _set_state(self, msg):
-        if self.state_message in (message_ready, message_startup):
+        if self.state_message in (message_ready, message_startup, message_jogging):
             self.state_message = msg
         if (
             msg != message_ready
@@ -467,7 +478,12 @@ class Printer:
             logging.info(info)
         if self.bglogger is not None:
             self.bglogger.set_rollover_info(name, info)
-
+    def jog_mode(self):
+        self.in_jogging_state = not self.in_jogging_state
+        if self.in_jogging_state:
+            self._set_state(message_jogging)
+        else:
+            self._set_state(message_ready)
     def invoke_shutdown(self, msg):
         if self.in_shutdown_state:
             return

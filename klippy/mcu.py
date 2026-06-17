@@ -192,6 +192,10 @@ class MCU_trsync:
     def get_steppers(self):
         return list(self._steppers)
 
+    def stop_steppers(self):
+        for stepper in self._steppers:
+            self._stepper_stop_cmd.send([stepper.get_oid(), self._oid])
+
     def _build_config(self):
         mcu = self._mcu
         # Setup config
@@ -329,6 +333,10 @@ class TriggerDispatch:
 
     def get_command_queue(self):
         return self._trsyncs[0].get_command_queue()
+
+    def stop_steppers(self):
+        for trsync in self._trsyncs:
+            trsync.stop_steppers()
 
     def add_stepper(self, stepper):
         trsyncs = {trsync.get_mcu(): trsync for trsync in self._trsyncs}

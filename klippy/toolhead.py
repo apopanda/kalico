@@ -373,9 +373,19 @@ class ToolHead:
             desc=self.cmd_RESET_VELOCITY_LIMIT_help,
         )
         gcode.register_command("M204", self.cmd_M204)
+        gcode.register_command('JOG_INTERRUPT', self.cmd_jog_interrupt)
+        gcode.register_command('JOG', self.cmd_jog_mode)
+        gcode.register_command('JOG_MOVE', self.cmd_jog_move)
         self.printer.register_event_handler(
             "klippy:shutdown", self._handle_shutdown
         )
+        self.printer.register_event_handler("toolhead:stop_movement",
+                                            self._handle_stop_movement)
+        self.printer.register_event_handler("toolhead:jog_mode",
+                                            self._handle_jog_mode)
+        self.printer.register_event_handler("toolhead:start_jog_move",
+                                            self._handle_jog_start_movement)
+
         # Load some default modules
         modules = [
             "gcode_move",
@@ -385,6 +395,7 @@ class ToolHead:
             "manual_probe",
             "tuning_tower",
             "garbage_collection",
+            "jog",
         ]
         for module_name in modules:
             self.printer.load_object(config, module_name)
@@ -703,6 +714,11 @@ class ToolHead:
         self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
         self.flush_step_generation()
 
+    def enable_steppers(self, enable):
+            stepper_names = [s.get_name() for s in self.get_kinematics().get_steppers()]
+            stepper_enable = self.printer.lookup_object('stepper_enable')
+            stepper_enable.set_motors_enable(stepper_names, enable)
+
     # Misc commands
     def stats(self, eventtime):
         max_queue_time = max(self.print_time, self.last_flush_time)
@@ -747,6 +763,22 @@ class ToolHead:
     def _handle_shutdown(self):
         self.can_pause = False
         self.lookahead.reset()
+
+    def _handle_stop_movement(self):
+        self.mcu.get_dispatch().stop_jog()
+        self.mcu.stop_steppers()
+        self.lookahead.reset()
+        self.trapq_finalize_moves(self.trapq, self.reactor.NEVER, 0.)
+
+    def _handle_jog_mode(self):
+        self.printer.jog_mode()
+        self.enable_steppers(True)
+
+    def _handle_jog_start_movement(self):
+        fmove = self.printer.lookup_object('force_move')
+        jog = self.printer.lookup_object('jog')
+        fmove.manual_move_multiple(jog.get_speed(), jog.get_distance_vector(), jog.get_acceleration())
+        jog.reset()
 
     def get_kinematics(self):
         return self.kin
@@ -954,6 +986,36 @@ class ToolHead:
             accel = min(p, t)
         self.max_accel = accel
         self._calc_junction_deviation()
+
+    def cmd_jog_interrupt(self, gcmd):
+        self.printer.send_event("toolhead:stop_movement")
+
+    def cmd_jog_mode(self, gcmd):
+        if self.printer.get_state_message()[1] in ['ready', 'jogging']:
+            jog = self.printer.lookup_object('jog')
+            jog.reset()
+            self.printer.send_event("toolhead:jog_mode")
+
+    def cmd_jog_move(self, gcmd):
+        if self.printer.is_jogging():
+            params = gcmd.get_command_parameters()
+            axis_map = {'X': 0, 'Y': 1, 'Z': 2}
+            speed = gcmd.get_float('S', 0., above=0.)
+            acceleration = gcmd.get_float('F', 0., above=0.)
+            dist = [0., 0., 0.]
+
+            for axis, pos in axis_map.items():
+                if axis in params:
+                    dist[pos] = float(params[axis])
+
+            jog = self.printer.lookup_object('jog')
+            jog.set_speed(speed)
+            jog.set_acceleration(acceleration)
+            jog.set_distance_vector(dist)
+
+            self.printer.send_event("toolhead:start_jog_move")
+        else:
+            gcmd.respond_info('Not in jogging mode. Enable with gcode command JOG')
 
     def set_accel(self, accel):
         self.max_accel = accel

@@ -61,6 +61,8 @@ class MCU_stepper:
         ffi_lib.stepcompress_set_invert_sdir(self._stepqueue, self._invert_dir)
         self._mcu.register_stepqueue(self._stepqueue)
         self._stepper_kinematics = None
+        self.pre_jog_kinematics = None
+        self.pre_jog_trapq = None
         self._itersolve_generate_steps = ffi_lib.itersolve_generate_steps
         self._itersolve_check_active = ffi_lib.itersolve_check_active
         self._trapq = ffi_main.NULL
@@ -248,16 +250,29 @@ class MCU_stepper:
         return self._stepper_kinematics
 
     def set_stepper_kinematics(self, sk):
-        old_sk = self._stepper_kinematics
+
         mcu_pos = 0
-        if old_sk is not None:
+        self.pre_jog_kinematics = self._stepper_kinematics
+        if self.pre_jog_kinematics is not None:
             mcu_pos = self.get_mcu_position()
         self._stepper_kinematics = sk
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.itersolve_set_stepcompress(sk, self._stepqueue, self._step_dist)
         self.set_trapq(self._trapq)
         self._set_mcu_position(mcu_pos)
-        return old_sk
+        return self.pre_jog_kinematics
+
+    def get_pre_jog_kinematics(self):
+        return self.pre_jog_kinematics
+
+    def reset_pre_jog_kinematics(self):
+        self.pre_jog_kinematics = None
+
+    def get_pre_jog_trapq(self):
+        return self.pre_jog_trapq
+
+    def reset_pre_jog_trapq(self):
+        self.pre_jog_trapq = None
 
     def note_homing_end(self):
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -298,6 +313,7 @@ class MCU_stepper:
         ffi_lib.itersolve_set_trapq(self._stepper_kinematics, tq)
         old_tq = self._trapq
         self._trapq = tq
+        self.pre_jog_trapq = old_tq
         return old_tq
 
     def add_active_callback(self, cb):

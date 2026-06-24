@@ -54,7 +54,7 @@ def calc_moves_time(speed, accel, dist=None):
         speed = math.sqrt(max_cruise_v2)
     accel_t = speed / accel
     accel_decel_d = accel_t * speed
-    cruise_t = (magnitude - accel_decel_d) / speed
+    cruise_t = abs((magnitude - accel_decel_d) / speed)
     return axis_r, accel_t, cruise_t, speed
 
 class ForceMove:
@@ -176,14 +176,22 @@ class ForceMove:
                           axis_r[axis_map['X']], axis_r[axis_map['Y']], axis_r[axis_map['Z']],
                           0., cruise_v, accel)
         print_time = print_time + accel_t + cruise_t + accel_t
-        toolhead.note_mcu_movequeue_activity(print_time)
-        toolhead.dwell(accel_t + cruise_t + accel_t)
-        toolhead.flush_step_generation()
+        for stepper in steppers:
+            for axis, pos in axis_map.items():
+                if stepper.is_active_axis(axis.lower()):
+                    stepper.generate_steps(print_time)
+        self.trapq_finalize_moves(
+            self.trapq, print_time + 99999.9, print_time + 99999.9
+        )
         for stepper in steppers:
             stepper.set_trapq(stepper.get_pre_jog_trapq())
             stepper.set_stepper_kinematics(stepper.get_pre_jog_kinematics())
             stepper.reset_pre_jog_kinematics()
             stepper.reset_pre_jog_trapq()
+        toolhead.note_mcu_movequeue_activity(print_time)
+        toolhead.dwell(accel_t + cruise_t + accel_t)
+        toolhead.flush_step_generation()
+
 
     def _lookup_stepper(self, gcmd):
         name = gcmd.get("STEPPER")

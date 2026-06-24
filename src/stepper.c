@@ -391,3 +391,10 @@ stepper_shutdown(void)
     }
 }
 DECL_SHUTDOWN(stepper_shutdown);
+
+void
+command_stepper_stop_all(uint32_t *args)
+{
+    stepper_shutdown();
+}
+DECL_COMMAND(command_stepper_stop_all, "steppers_stop");

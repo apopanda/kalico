@@ -192,10 +192,6 @@ class MCU_trsync:
     def get_steppers(self):
         return list(self._steppers)
 
-    def stop_steppers(self):
-        for stepper in self._steppers:
-            self._stepper_stop_cmd.send([stepper.get_oid(), self._oid])
-
     def _build_config(self):
         mcu = self._mcu
         # Setup config
@@ -333,11 +329,6 @@ class TriggerDispatch:
 
     def get_command_queue(self):
         return self._trsyncs[0].get_command_queue()
-
-    def stop_steppers(self):
-        for trsync in self._trsyncs:
-            trsync.stop_steppers()
-
     def add_stepper(self, stepper):
         trsyncs = {trsync.get_mcu(): trsync for trsync in self._trsyncs}
         trsync = trsyncs.get(stepper.get_mcu())
@@ -807,6 +798,7 @@ class MCU:
         self._reset_cmd = self._config_reset_cmd = None
         self._is_mcu_bridge = False
         self._emergency_stop_cmd = None
+        self._stop_all_steppers = None
         self._is_shutdown = self._is_timeout = False
         self._shutdown_clock = 0
         self._shutdown_msg = ""
@@ -1235,6 +1227,7 @@ class MCU:
             )
         self._stats_sumsq_base = self.get_constant_float("STATS_SUMSQ_BASE")
         self._emergency_stop_cmd = self.lookup_command("emergency_stop")
+        self._stop_all_steppers = self.lookup_command("steppers_stop")
         self._reset_cmd = self.try_lookup_command("reset")
         self._config_reset_cmd = self.try_lookup_command("config_reset")
         ext_only = self._reset_cmd is None and self._config_reset_cmd is None
@@ -1402,6 +1395,9 @@ class MCU:
         ):
             return
         self._emergency_stop_cmd.send()
+
+    def stop_steppers(self):
+        self._stop_all_steppers.send()
 
     def _restart_arduino(self):
         logging.info("Attempting MCU '%s' reset", self._name)

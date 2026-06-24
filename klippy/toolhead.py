@@ -765,7 +765,6 @@ class ToolHead:
         self.lookahead.reset()
 
     def _handle_stop_movement(self):
-        self.mcu.get_dispatch().stop_jog()
         self.mcu.stop_steppers()
         self.lookahead.reset()
         self.trapq_finalize_moves(self.trapq, self.reactor.NEVER, 0.)

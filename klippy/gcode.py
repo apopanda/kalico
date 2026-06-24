@@ -347,7 +347,7 @@ class GCodeDispatch:
             self._script_context -= 1
 
     def run_script(self, script):
-        if "INTERRUPT" in script:
+        if "INTERRUPT" in script.upper():
             self._process_commands(script.split("\n"), need_ack=False)
         else:
             with self.mutex:

@@ -765,9 +765,11 @@ class ToolHead:
         self.lookahead.reset()
 
     def _handle_stop_movement(self):
+        fmove = self.printer.lookup_object('force_move')
         self.mcu.stop_steppers()
         self.lookahead.reset()
-        self.trapq_finalize_moves(self.trapq, self.reactor.NEVER, 0.)
+        self.trapq_finalize_moves(self.trapq, self.reactor.NEVER, 0)
+        fmove.note_jogging_end()
 
     def _handle_jog_mode(self):
         self.printer.jog_mode()

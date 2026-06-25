@@ -395,6 +395,10 @@ DECL_SHUTDOWN(stepper_shutdown);
 void
 command_stepper_stop_all(uint32_t *args)
 {
-    stepper_shutdown();
+    uint8_t i;
+    struct stepper *s;
+    foreach_oid(i, s, command_config_stepper) {
+        stepper_stop(&s->stop_signal, 0);
+    }
 }
 DECL_COMMAND(command_stepper_stop_all, "steppers_stop");

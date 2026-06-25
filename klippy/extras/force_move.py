@@ -192,6 +192,12 @@ class ForceMove:
         toolhead.dwell(accel_t + cruise_t + accel_t)
         toolhead.flush_step_generation()
 
+    def note_jogging_end(self):
+        toolhead = self.printer.lookup_object('toolhead')
+        steppers = toolhead.get_kinematics().get_steppers()
+
+        for stepper in steppers:
+            stepper.note_homing_end()
 
     def _lookup_stepper(self, gcmd):
         name = gcmd.get("STEPPER")

@@ -35,6 +35,8 @@ def normalize(distances=None):
     if distances is None:
         distances = []
     magnitude = magnitude_v(distances)
+    if magnitude is 0.:
+        magnitude = 1.
     return list(map(lambda dist: dist / magnitude, distances))
 
 def magnitude_v(distances):

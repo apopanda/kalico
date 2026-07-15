@@ -166,16 +166,24 @@ class ForceMove:
         axis_map = {'X': 0, 'Y': 1, 'Z': 2}
 
         for stepper in steppers:
-            for axis, pos in axis_map.items():
-                if stepper.is_active_axis(axis.lower()):
-                    stepper.set_stepper_kinematics(self.stepper_kinematics[axis.lower()])
-            stepper.set_trapq(self.trapq)
-            stepper.set_position((0., 0., 0.))
+             for axis, pos in axis_map.items():
+                 if stepper.is_active_axis(axis.lower()):
+                     stepper.set_stepper_kinematics(self.stepper_kinematics[axis.lower()])
+             stepper.set_trapq(self.trapq)
+
+        cp = toolhead.get_position()
+        for axis, pos in axis_map.items():
+            dist[axis_map[axis]] = dist[axis_map[axis]] - cp[axis_map[axis]]
+
         axis_r, accel_t, cruise_t, cruise_v = calc_moves_time(speed, accel, dist)
         print_time = toolhead.get_last_move_time()
         self.trapq_append(self.trapq, print_time, accel_t, cruise_t, accel_t,
-                          0., 0., 0.,
-                          axis_r[axis_map['X']], axis_r[axis_map['Y']], axis_r[axis_map['Z']],
+                          cp[axis_map['X']],
+                          cp[axis_map['Y']],
+                          cp[axis_map['Z']],
+                          axis_r[axis_map['X']],
+                          axis_r[axis_map['Y']],
+                          axis_r[axis_map['Z']],
                           0., cruise_v, accel)
         print_time = print_time + accel_t + cruise_t + accel_t
         for stepper in steppers:
@@ -185,21 +193,25 @@ class ForceMove:
         self.trapq_finalize_moves(
             self.trapq, print_time + 99999.9, print_time + 99999.9
         )
-        for stepper in steppers:
-            stepper.set_trapq(stepper.get_pre_jog_trapq())
-            stepper.set_stepper_kinematics(stepper.get_pre_jog_kinematics())
-            stepper.reset_pre_jog_kinematics()
-            stepper.reset_pre_jog_trapq()
         toolhead.note_mcu_movequeue_activity(print_time)
         toolhead.dwell(accel_t + cruise_t + accel_t)
         toolhead.flush_step_generation()
 
+        self.set_toolhead_pos_from_steppers(steppers)
+
+    def set_toolhead_pos_from_steppers(self, steppers):
+        toolhead = self.printer.lookup_object('toolhead')
+        cinfo = [(s.get_name(), s.get_commanded_position()) for s in steppers]
+        kinfo = list(toolhead.get_kinematics().calc_position(dict(cinfo)))
+        kinfo.append(0.) # todo handle extrusion stepper
+        toolhead.set_position(kinfo)
+
     def note_jogging_end(self):
         toolhead = self.printer.lookup_object('toolhead')
         steppers = toolhead.get_kinematics().get_steppers()
-
         for stepper in steppers:
             stepper.note_homing_end()
+        self.set_toolhead_pos_from_steppers(steppers)
 
     def _lookup_stepper(self, gcmd):
         name = gcmd.get("STEPPER")

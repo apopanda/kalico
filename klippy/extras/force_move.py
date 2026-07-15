@@ -172,8 +172,6 @@ class ForceMove:
              stepper.set_trapq(self.trapq)
 
         cp = toolhead.get_position()
-        for axis, pos in axis_map.items():
-            dist[axis_map[axis]] = dist[axis_map[axis]] - cp[axis_map[axis]]
 
         axis_r, accel_t, cruise_t, cruise_v = calc_moves_time(speed, accel, dist)
         print_time = toolhead.get_last_move_time()

@@ -7,6 +7,7 @@ import logging
 import math
 
 from klippy import chelper
+from klippy.extras.jog import Jog
 
 BUZZ_DISTANCE = 1.0
 BUZZ_VELOCITY = BUZZ_DISTANCE / 0.250
@@ -161,6 +162,7 @@ class ForceMove:
 
     def manual_move_multiple(self, speed, dist=[], accel=0.):
         toolhead = self.printer.lookup_object('toolhead')
+        jog = self.printer.lookup_object('jog')
         toolhead.flush_step_generation()
         steppers = toolhead.get_kinematics().get_steppers()
         axis_map = {'X': 0, 'Y': 1, 'Z': 2}
@@ -194,22 +196,25 @@ class ForceMove:
         toolhead.note_mcu_movequeue_activity(print_time)
         toolhead.dwell(accel_t + cruise_t + accel_t)
         toolhead.flush_step_generation()
+        jog.set_prev_jog_time(print_time)
+        self.set_toolhead_pos_from_steppers(steppers, print_time)
 
-        self.set_toolhead_pos_from_steppers(steppers)
-
-    def set_toolhead_pos_from_steppers(self, steppers):
+    def set_toolhead_pos_from_steppers(self, steppers, previous_jog_time):
         toolhead = self.printer.lookup_object('toolhead')
-        cinfo = [(s.get_name(), s.get_commanded_position()) for s in steppers]
+        # cinfo = [(s.get_name(), kin.spos + (s.get_mcu_position() - s.get_past_mcu_position(previous_jog_time)) * s._step_dist) for s in steppers] ???
+        cinfo = [(s.get_name(), s.get_mcu_position()  * s._step_dist) for s in steppers] # _mcu_position_offset will be unreliable since it assumes that moves always complete
         kinfo = list(toolhead.get_kinematics().calc_position(dict(cinfo)))
         kinfo.append(0.) # todo handle extrusion stepper
         toolhead.set_position(kinfo)
 
     def note_jogging_end(self):
         toolhead = self.printer.lookup_object('toolhead')
+        jog = self.printer.lookup_object('jog')
+        last_jog_time = jog.get_prev_jog_time()
         steppers = toolhead.get_kinematics().get_steppers()
         for stepper in steppers:
             stepper.note_homing_end()
-        self.set_toolhead_pos_from_steppers(steppers)
+        self.set_toolhead_pos_from_steppers(steppers, last_jog_time)
 
     def _lookup_stepper(self, gcmd):
         name = gcmd.get("STEPPER")

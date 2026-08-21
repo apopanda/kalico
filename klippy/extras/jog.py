@@ -3,6 +3,7 @@ class Jog:
         self._speed = 0.
         self._acceleration = 0.
         self._distance_vector = [0., 0., 0.]
+        self._prev_jog_time = 0.
     # implement default acceleration / speed taken from stepper
 
     def set_speed(self, speed):
@@ -11,6 +12,8 @@ class Jog:
         self._acceleration = acceleration
     def set_distance_vector(self, dist):
         self._distance_vector = dist
+    def set_prev_jog_time(self, prev_jog_time):
+        self._prev_jog_time = prev_jog_time
 
     def reset(self):
         self._speed = 0.
@@ -23,6 +26,8 @@ class Jog:
         return self._acceleration
     def get_distance_vector(self):
         return self._distance_vector
+    def get_prev_jog_time(self):
+        return self._prev_jog_time
 
 def load_config(config):
     return Jog(config)

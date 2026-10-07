@@ -773,7 +773,8 @@ class ToolHead:
 
     def _handle_jog_mode(self):
         self.printer.jog_mode()
-        self.enable_steppers(True)
+        if self.printer.is_jogging():
+            self.enable_steppers(True)
 
     def _handle_jog_start_movement(self):
         fmove = self.printer.lookup_object('force_move')
@@ -992,9 +993,19 @@ class ToolHead:
         self.printer.send_event("toolhead:stop_movement")
 
     def cmd_jog_mode(self, gcmd):
-        if self.printer.get_state_message()[1] in ['ready', 'jogging']:
+        value = gcmd.get_int('VALUE', 1, minval=0, maxval=1)
+        if value:
+            if self.printer.is_jogging():
+                return
+            if self.printer.get_state_message()[1] != 'ready':
+                raise gcmd.error('Cannot enter jog mode, printer not ready')
             jog = self.printer.lookup_object('jog')
             jog.reset()
+            self.printer.send_event("toolhead:jog_mode")
+        elif self.printer.is_jogging():
+            self.printer.send_event("toolhead:stop_movement")
+            fmove = self.printer.lookup_object('force_move')
+            fmove.jog_restore()
             self.printer.send_event("toolhead:jog_mode")
 
     def cmd_jog_move(self, gcmd):

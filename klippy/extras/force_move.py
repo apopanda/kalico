@@ -36,7 +36,7 @@ def normalize(distances=None):
     if distances is None:
         distances = []
     magnitude = magnitude_v(distances)
-    if magnitude is 0.:
+    if magnitude == 0.:
         magnitude = 1.
     return list(map(lambda dist: dist / magnitude, distances))
 
@@ -77,6 +77,7 @@ class ForceMove:
             'z': ffi_main.gc(
                 ffi_lib.cartesian_stepper_alloc(b'z'), ffi_lib.free)
         }
+        self._jog_swapped = False
         # Register commands
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command(
@@ -167,11 +168,14 @@ class ForceMove:
         steppers = toolhead.get_kinematics().get_steppers()
         axis_map = {'X': 0, 'Y': 1, 'Z': 2}
 
-        for stepper in steppers:
-             for axis, pos in axis_map.items():
-                 if stepper.is_active_axis(axis.lower()):
-                     stepper.set_stepper_kinematics(self.stepper_kinematics[axis.lower()])
-             stepper.set_trapq(self.trapq)
+        if not self._jog_swapped:
+            for stepper in steppers:
+                 for axis, pos in axis_map.items():
+                     if stepper.is_active_axis(axis.lower()):
+                         stepper.set_stepper_kinematics(self.stepper_kinematics[axis.lower()])
+                 stepper.set_trapq(self.trapq)
+            self._jog_swapped = True
+            self.set_toolhead_pos_from_steppers(steppers, toolhead.get_last_move_time())
 
         cp = toolhead.get_position()
 
@@ -201,7 +205,6 @@ class ForceMove:
 
     def set_toolhead_pos_from_steppers(self, steppers, previous_jog_time):
         toolhead = self.printer.lookup_object('toolhead')
-        # cinfo = [(s.get_name(), kin.spos + (s.get_mcu_position() - s.get_past_mcu_position(previous_jog_time)) * s._step_dist) for s in steppers] ???
         cinfo = [(s.get_name(), s.get_mcu_position()  * s._step_dist) for s in steppers] # _mcu_position_offset will be unreliable since it assumes that moves always complete
         kinfo = list(toolhead.get_kinematics().calc_position(dict(cinfo)))
         kinfo.append(0.) # todo handle extrusion stepper
@@ -215,6 +218,20 @@ class ForceMove:
         for stepper in steppers:
             stepper.note_homing_end()
         self.set_toolhead_pos_from_steppers(steppers, last_jog_time)
+
+    def jog_restore(self):
+        toolhead = self.printer.lookup_object('toolhead')
+        steppers = toolhead.get_kinematics().get_steppers()
+        trapq = toolhead.get_trapq()
+        for stepper in steppers:
+            sk = stepper.get_pre_jog_kinematics()
+            if sk is not None:
+                stepper.set_stepper_kinematics(sk)
+            stepper.set_trapq(trapq)
+            stepper.reset_pre_jog_kinematics()
+            stepper.reset_pre_jog_trapq()
+        self._jog_swapped = False
+        self.set_toolhead_pos_from_steppers(steppers, toolhead.get_last_move_time())
 
     def _lookup_stepper(self, gcmd):
         name = gcmd.get("STEPPER")

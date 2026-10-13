@@ -200,7 +200,7 @@ class DumpTrapQ:
         return {"data": d}
 
 
-STATUS_REFRESH_TIME = 0.250
+STATUS_REFRESH_TIME = 0.010
 
 
 class PrinterMotionReport:
@@ -231,6 +231,13 @@ class PrinterMotionReport:
         toolhead = self.printer.lookup_object("toolhead")
         trapq = toolhead.get_trapq()
         self.trapqs["toolhead"] = DumpTrapQ(self.printer, "toolhead", trapq)
+        # Jog moves run on force_move's own trapq; register it so live
+        # position/velocity stay truthful while jogging
+        fmove = self.printer.lookup_object("force_move", None)
+        if fmove is not None:
+            self.trapqs["jog"] = DumpTrapQ(
+                self.printer, "jog", fmove.get_jog_trapq()
+            )
         # Lookup extruder trapqs
         for i in range(99):
             ename = "extruder%d" % (i,)
@@ -294,10 +301,33 @@ class PrinterMotionReport:
         # Calculate current requested toolhead position
         mcu = self.printer.lookup_object("mcu")
         print_time = mcu.estimated_print_time(eventtime)
-        pos, velocity = self.trapqs["toolhead"].get_trapq_position(print_time)
-        if pos is not None:
-            xyzpos = pos[:3]
-            xyzvelocity = velocity
+        if self.printer.is_jogging():
+            # Jog moves are scheduled ahead of MCU time, so trapq lookups
+            # only show the last completed move. The physical live position
+            # is the stepper MCU position; velocity is not derivable
+            # cheaply from steps, so read the jog trapq's in-flight move
+            # schedule delta as an approximation of commanded speed.
+            try:
+                toolhead = self.printer.lookup_object("toolhead")
+                steppers = toolhead.get_kinematics().get_steppers()
+                cinfo = {s.get_name(): s.get_mcu_position() * s._step_dist
+                         for s in steppers}
+                xyzpos = tuple(
+                    toolhead.get_kinematics().calc_position(cinfo))
+                velocity = 0.0
+                jh = self.trapqs.get("jog")
+                if jh is not None:
+                    _, vj = jh.get_trapq_position(print_time)
+                    if vj:
+                        velocity = vj
+            except Exception:
+                logging.exception("motion_report jog fallback failed")
+        else:
+            pos, velocity = self.trapqs["toolhead"].get_trapq_position(
+                print_time)
+            if pos is not None:
+                xyzpos = pos[:3]
+                xyzvelocity = velocity
         # Calculate requested position of currently active extruder
         toolhead = self.printer.lookup_object("toolhead")
         ehandler = self.trapqs.get(toolhead.get_extruder().get_name())

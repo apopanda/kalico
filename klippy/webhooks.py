@@ -475,6 +475,8 @@ class WebHooks:
 
     def get_status(self, eventtime):
         state_message, state = self.printer.get_state_message()
+        if state == "jogging":
+            state = "ready"
         return {"state": state, "state_message": state_message}
 
     def stats(self, eventtime):
@@ -550,7 +552,7 @@ class GCodeHelper:
             self.is_output_registered = True
 
 
-SUBSCRIPTION_REFRESH_TIME = 0.25
+SUBSCRIPTION_REFRESH_TIME = 0.008
 
 
 class QueryStatusHelper:

@@ -219,6 +219,9 @@ class ForceMove:
             stepper.note_homing_end()
         self.set_toolhead_pos_from_steppers(steppers, last_jog_time)
 
+    def get_jog_trapq(self):
+        return self.trapq
+
     def jog_restore(self):
         toolhead = self.printer.lookup_object('toolhead')
         steppers = toolhead.get_kinematics().get_steppers()

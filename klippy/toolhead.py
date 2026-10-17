@@ -766,13 +766,19 @@ class ToolHead:
         self.lookahead.reset()
 
     def _handle_stop_movement(self):
-        fmove = self.printer.lookup_object('force_move')
+        jog = self.printer.lookup_object('jog')
+        motion = jog.get_motion()
+        motion.request_interrupt()
+        motion.wait_idle()
         self.mcu.stop_steppers()
         self.lookahead.reset()
         self.trapq_finalize_moves(self.trapq, self.reactor.NEVER, 0)
-        fmove.trapq_finalize_moves(
-            fmove.get_jog_trapq(), self.reactor.NEVER, 0)
-        fmove.note_jogging_end()
+        self.trapq_finalize_moves(
+            jog.get_jog_trapq(), self.reactor.NEVER, 0)
+        jog.note_jogging_end()
+        logging.info(
+            "STOPDIAG: ptime=%.3f min_restart=%.3f",
+            self.print_time, self.min_restart_time)
 
     def _handle_jog_mode(self):
         self.printer.jog_mode()
@@ -780,9 +786,8 @@ class ToolHead:
             self.enable_steppers(True)
 
     def _handle_jog_start_movement(self):
-        fmove = self.printer.lookup_object('force_move')
         jog = self.printer.lookup_object('jog')
-        fmove.manual_move_multiple(jog.get_speed(), jog.get_distance_vector(), jog.get_acceleration())
+        jog.manual_move_multiple(jog.get_speed(), jog.get_distance_vector(), jog.get_acceleration())
         jog.reset()
 
     def get_kinematics(self):
@@ -1007,18 +1012,17 @@ class ToolHead:
             self.printer.send_event("toolhead:jog_mode")
         elif self.printer.is_jogging():
             self.printer.send_event("toolhead:stop_movement")
-            fmove = self.printer.lookup_object('force_move')
-            fmove.jog_restore()
+            jog = self.printer.lookup_object('jog')
+            jog.jog_restore()
             self.printer.send_event("toolhead:jog_mode")
 
     def cmd_jog_reverse(self, gcmd):
         """Soft stop: finalize the scheduled jog motion at the current
         clock (deceleration handled by finalize at executed boundary),
         restore normal kinematics, keep steppers enabled."""
-        fmove = self.printer.lookup_object("force_move")
         jog = self.printer.lookup_object("jog")
-        fmove.brake_jog(self.get_last_move_time())
-        fmove.jog_restore()
+        jog.brake_jog(self.get_last_move_time())
+        jog.jog_restore()
         self.printer.send_event("toolhead:stop_movement")
         self.printer.send_event("toolhead:jog_mode")
         jog.reset()

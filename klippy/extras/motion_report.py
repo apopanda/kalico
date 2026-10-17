@@ -231,12 +231,12 @@ class PrinterMotionReport:
         toolhead = self.printer.lookup_object("toolhead")
         trapq = toolhead.get_trapq()
         self.trapqs["toolhead"] = DumpTrapQ(self.printer, "toolhead", trapq)
-        # Jog moves run on force_move's own trapq; register it so live
+        # Jog moves run on the jog module's own trapq; register it so live
         # position/velocity stay truthful while jogging
-        fmove = self.printer.lookup_object("force_move", None)
-        if fmove is not None:
+        jogobj = self.printer.lookup_object("jog", None)
+        if jogobj is not None:
             self.trapqs["jog"] = DumpTrapQ(
-                self.printer, "jog", fmove.get_jog_trapq()
+                self.printer, "jog", jogobj.get_jog_trapq()
             )
         # Lookup extruder trapqs
         for i in range(99):

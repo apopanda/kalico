@@ -374,7 +374,6 @@ class ToolHead:
         )
         gcode.register_command("M204", self.cmd_M204)
         gcode.register_command('JOG_INTERRUPT', self.cmd_jog_interrupt)
-        gcode.register_command('JOG_INTERRUPT_SOFT', self.cmd_jog_reverse)
         gcode.register_command('JOG', self.cmd_jog_mode)
         gcode.register_command('JOG_MOVE', self.cmd_jog_move)
         self.printer.register_event_handler(
@@ -1021,18 +1020,6 @@ class ToolHead:
             jog = self.printer.lookup_object('jog')
             jog.jog_restore()
             self.printer.send_event("toolhead:jog_mode")
-
-    def cmd_jog_reverse(self, gcmd):
-        """Soft stop: finalize the scheduled jog motion at the current
-        clock (deceleration handled by finalize at executed boundary),
-        restore normal kinematics, keep steppers enabled."""
-        jog = self.printer.lookup_object("jog")
-        jog.brake_jog(self.get_last_move_time())
-        jog.jog_restore()
-        self.printer.send_event("toolhead:stop_movement")
-        self.printer.send_event("toolhead:jog_mode")
-        jog.reset()
-        jog.set_prev_jog_time(0.)
 
     def cmd_jog_move(self, gcmd):
         if self.printer.is_jogging():

@@ -776,6 +776,12 @@ class ToolHead:
         self.trapq_finalize_moves(
             jog.get_jog_trapq(), self.reactor.NEVER, 0)
         jog.note_jogging_end()
+        est_print_time = self.mcu.estimated_print_time(self.reactor.monotonic())
+        self.print_time = est_print_time
+        self.min_restart_time = est_print_time
+        self.last_flush_time = est_print_time
+        jog.set_prev_jog_time(0.)
+        self._calc_print_time()
         logging.info(
             "STOPDIAG: ptime=%.3f min_restart=%.3f",
             self.print_time, self.min_restart_time)

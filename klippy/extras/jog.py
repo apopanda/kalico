@@ -8,7 +8,7 @@ import math
 from klippy import chelper
 
 DRIP_SEGMENT_TIME = 0.050
-DRIP_TIME = 0.100
+DRIP_TIME = 0.350
 STEPCOMPRESS_FLUSH_TIME = 0.050
 
 
@@ -64,6 +64,8 @@ class JogMotion:
                 self._check_interrupt()
                 speed, dist, accel = self._queue.pop(0)
                 self._jog._execute_move(speed, dist, accel)
+                if self._queue and not self._interrupted:
+                    self.reactor.pause(self.reactor.monotonic())
         except JogInterrupted:
             logging.info("JOGDIAG: move abandoned on interrupt")
             self._queue = []

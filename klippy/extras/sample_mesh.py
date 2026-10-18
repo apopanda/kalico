@@ -42,6 +42,9 @@ class SampleMesh:
         self._wrapped_motion = None
         self._hook_xy = None
         self._orig_skp = None
+        self._last_params = None
+        self._zref = 0.0
+        self._suspended = False
         self.gcode.register_command(
             'SAMPLE_MESH', self.cmd_SAMPLE_MESH, desc=self.cmd_SAMPLE_MESH_help)
         self.gcode.register_command(
@@ -50,6 +53,15 @@ class SampleMesh:
         self.gcode.register_command(
             'SAMPLE_MESH_STATUS', self.cmd_SAMPLE_MESH_STATUS,
             desc=self.cmd_SAMPLE_MESH_STATUS_help)
+        self.gcode.register_command(
+            'SAMPLE_MESH_SHIFT', self.cmd_SAMPLE_MESH_SHIFT,
+            desc=self.cmd_SAMPLE_MESH_SHIFT_help)
+        self.gcode.register_command(
+            'SAMPLE_MESH_SUSPEND', self.cmd_SAMPLE_MESH_SUSPEND,
+            desc=self.cmd_SAMPLE_MESH_SUSPEND_help)
+        self.gcode.register_command(
+            'SAMPLE_MESH_RESUME', self.cmd_SAMPLE_MESH_RESUME,
+            desc=self.cmd_SAMPLE_MESH_RESUME_help)
         self.printer.register_event_handler('klippy:ready', self._handle_ready)
         self.printer.register_event_handler(
             'klippy:disconnect', self._handle_disconnect)
@@ -93,6 +105,12 @@ class SampleMesh:
     def _skp_clear_mesh(self, gcmd):
         if self._orig_skp is not None:
             self._orig_skp(gcmd)
+        rezeros = [gcmd.get_float(ax, None) is not None for ax in 'XYZ']
+        if not any(rezeros):
+            logging.info(
+                'sample_mesh: SET_KINEMATIC_POSITION without X/Y/Z '
+                '(homing flag update) - mesh kept')
+            return
         if self._zmesh is not None:
             logging.info(
                 'sample_mesh: frame re-zeroed, clearing stale mesh')
@@ -111,6 +129,8 @@ class SampleMesh:
             self._orig_enqueue = None
 
     def _follow_zmesh(self):
+        if self._suspended:
+            return None
         if self._zmesh is not None and self._follow:
             return self._zmesh
         return None
@@ -234,9 +254,11 @@ class SampleMesh:
             'mesh_x_pps': pps,
             'mesh_y_pps': pps,
         }
+        self._last_params = dict(params)
         mesh = ZMesh(params, 'sample')
         mesh.build_mesh(matrix)
         self._install(bedmesh, mesh, follow=follow, grid=matrix)
+        self._zref = gcmd.get_float('ZREF', 0.0)
         self._hook_xy = None
         gcmd.respond_info(
             'sample_mesh: %dx%d grid active, bounds (%.1f,%.1f)-(%.1f,%.1f), '
@@ -251,10 +273,48 @@ class SampleMesh:
         if bedmesh is not None:
             bedmesh.set_mesh(None)
         self._zmesh = None
+        self._last_params = None
         self._follow = False
         self._grid = None
         self._hook_xy = None
         gcmd.respond_info('sample_mesh: cleared')
+
+    cmd_SAMPLE_MESH_SHIFT_help = 'Shift the active sample mesh by a z delta'
+
+    def cmd_SAMPLE_MESH_SHIFT(self, gcmd):
+        bedmesh = self.printer.lookup_object('bed_mesh', None)
+        if self._zmesh is None or self._grid is None or bedmesh is None:
+            raise gcmd.error('sample_mesh: no mesh active to shift')
+        delta = gcmd.get_float('DELTA')
+        if delta == 0:
+            gcmd.respond_info('sample_mesh: zero shift, mesh unchanged')
+            return
+        shift_max = self.max_z_range
+        if abs(delta) > shift_max:
+            raise gcmd.error(
+                'sample_mesh: shift %.1f exceeds sanity limit %.1f'
+                % (abs(delta), shift_max))
+        matrix = [[z + delta for z in row] for row in self._grid]
+        zmin = min(min(row) for row in matrix)
+        zmax = max(max(row) for row in matrix)
+        params = {
+            'min_x': self._zmesh.mesh_x_min,
+            'max_x': self._zmesh.mesh_x_max,
+            'min_y': self._zmesh.mesh_y_min,
+            'max_y': self._zmesh.mesh_y_max,
+            'x_count': len(matrix[0]),
+            'y_count': len(matrix),
+            'algo': self._last_params['algo'],
+            'mesh_x_pps': self._last_params['mesh_x_pps'],
+            'mesh_y_pps': self._last_params['mesh_y_pps'],
+        }
+        mesh = ZMesh(params, 'sample')
+        mesh.build_mesh(matrix)
+        self._install(bedmesh, mesh, follow=self._follow, grid=matrix)
+        self._zref += delta
+        gcmd.respond_info(
+            'sample_mesh: shifted by %.2f, z range %.2f..%.2f'
+            % (delta, zmin, zmax))
 
     cmd_SAMPLE_MESH_STATUS_help = 'Report sample mesh state'
 
@@ -265,16 +325,48 @@ class SampleMesh:
         zmin, zmax = self._zmesh.get_z_range()
         gcmd.respond_info(
             'sample_mesh: profile=%s bounds=(%.1f,%.1f)-(%.1f,%.1f) '
-            'z range %.2f..%.2f follow=%s'
+            'z range %.2f..%.2f follow=%s zref=%.2f'
             % (self._zmesh.get_profile_name(),
                self._zmesh.mesh_x_min, self._zmesh.mesh_y_min,
                self._zmesh.mesh_x_max, self._zmesh.mesh_y_max,
-               zmin, zmax, self._follow))
+               zmin, zmax, self._follow, self._zref))
+
+    cmd_SAMPLE_MESH_SUSPEND_help = 'Temporarily disable the mesh transform'
+
+    def cmd_SAMPLE_MESH_SUSPEND(self, gcmd):
+        if self._zmesh is None:
+            gcmd.respond_info('sample_mesh: no mesh active, nothing to suspend')
+            return
+        bedmesh = self.printer.lookup_object('bed_mesh', None)
+        if bedmesh is not None:
+            bedmesh.set_mesh(None)
+        self._suspended = True
+        logging.info('sample_mesh: transform suspended (measuring)')
+
+    cmd_SAMPLE_MESH_RESUME_help = 'Re-enable the mesh transform'
+
+    def cmd_SAMPLE_MESH_RESUME(self, gcmd):
+        if not self._suspended:
+            return
+        bedmesh = self.printer.lookup_object('bed_mesh', None)
+        if bedmesh is not None and self._zmesh is not None:
+            bedmesh.set_mesh(self._zmesh)
+        self._suspended = False
+        logging.info('sample_mesh: transform resumed')
+
+    def get_status(self, eventtime=None):
+        zref = self._zref if self._zmesh is not None else None
+        return {
+            "zref": zref,
+            "active": self._zmesh is not None,
+            "follow": self._follow,
+        }
 
     def _install(self, bedmesh, mesh, follow=False, grid=None):
         self._zmesh = None
         self._follow = False
         self._grid = None
+        self._zref = 0.0
         if mesh is None:
             bedmesh.set_mesh(None)
             return

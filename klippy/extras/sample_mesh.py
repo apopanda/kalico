@@ -4,9 +4,11 @@
 # autofocus engine (shape-gated sweeps) and hands the resulting grid
 # here. The grid is installed through bed_mesh's own ZMesh machinery,
 # so every gcode-layer move gets surface compensation from the stock
-# transform. Jog moves bypass the gcode layer (dedicated trapq), so
-# this module also wraps the jog executor to add the surface delta
-# along XY moves while a mesh is active.
+# transform. User jogs bypass the gcode layer (dedicated trapq), so
+# this module also hooks the jog move queue to add the surface delta
+# along XY jogs while a mesh is active. Automation never jogs: all
+# server-side motion is planned G-code and is compensated by the
+# bed_mesh transform alone.
 #
 # No probe hardware is involved: values are focus heights, positive
 # means the surface sits higher (physical z = gcode z + calc_z),
@@ -16,6 +18,7 @@
 #   [sample_mesh]
 #   max_z_range: peak-to-peak rejection threshold, z units (default 512)
 #   max_cell_jump: rejection threshold between adjacent grid points (default 150)
+#   jog_follow: hook the user jog queue for surface following (default false)
 #
 # Coordinates and z values are stage units exactly as klippy sees them
 # (OFM raw units map numerically 1:1 to klippy internals).
@@ -31,11 +34,14 @@ class SampleMesh:
         self.gcode = self.printer.lookup_object('gcode')
         self.max_z_range = config.getfloat('max_z_range', 512.0, above=0.)
         self.max_cell_jump = config.getfloat('max_cell_jump', 150.0, above=0.)
+        self.jog_follow = config.getboolean('jog_follow', False)
         self._zmesh = None
         self._follow = False
         self._grid = None
-        self._orig_execute = None
-        self._wrapped_jog = None
+        self._orig_enqueue = None
+        self._wrapped_motion = None
+        self._hook_xy = None
+        self._orig_skp = None
         self.gcode.register_command(
             'SAMPLE_MESH', self.cmd_SAMPLE_MESH, desc=self.cmd_SAMPLE_MESH_help)
         self.gcode.register_command(
@@ -49,46 +55,113 @@ class SampleMesh:
             'klippy:disconnect', self._handle_disconnect)
 
     # ------------------------------------------------------------------
-    # jog surface-follow
+    # jog surface-follow (user jogs only; automation stays on G-code)
 
     def _handle_ready(self):
         jog = self.printer.lookup_object('jog', None)
-        if jog is None or self._wrapped_jog is not None:
+        if jog is None or self._wrapped_motion is not None:
             return
-        self._orig_execute = jog._execute_move
-        jog._execute_move = self._execute_move_with_mesh
-        self._wrapped_jog = jog
-        logging.info('sample_mesh: jog surface-follow armed')
+        motion = getattr(jog, '_motion', None)
+        if not self.jog_follow or motion is None:
+            if motion is None and self.jog_follow:
+                logging.info(
+                    'sample_mesh: jog extra has no motion queue - '
+                    'surface-follow unavailable')
+            else:
+                logging.info(
+                    'sample_mesh: jog follow disabled by config '
+                    '(stock jog path preserved)')
+            self._arm_skp_guard()
+            return
+        self._orig_enqueue = motion.enqueue_move
+        motion.enqueue_move = self._enqueue_move_with_mesh
+        self._wrapped_motion = motion
+        self._hook_xy = None
+        logging.info('sample_mesh: jog surface-follow armed (enqueue hook)')
+        self._arm_skp_guard()
+
+    def _arm_skp_guard(self):
+        fm = self.printer.lookup_object('force_move', None)
+        if fm is not None:
+            self._orig_skp = self.gcode.register_command(
+                'SET_KINEMATIC_POSITION', None)
+            self.gcode.register_command(
+                'SET_KINEMATIC_POSITION', self._skp_clear_mesh)
+            logging.info(
+                'sample_mesh: SET_KINEMATIC_POSITION guard armed')
+
+    def _skp_clear_mesh(self, gcmd):
+        if self._orig_skp is not None:
+            self._orig_skp(gcmd)
+        if self._zmesh is not None:
+            logging.info(
+                'sample_mesh: frame re-zeroed, clearing stale mesh')
+            bedmesh = self.printer.lookup_object('bed_mesh', None)
+            if bedmesh is not None:
+                bedmesh.set_mesh(None)
+            self._zmesh = None
+            self._follow = False
+            self._grid = None
+        self._hook_xy = None
 
     def _handle_disconnect(self):
-        if self._wrapped_jog is not None:
-            self._wrapped_jog._execute_move = self._orig_execute
-            self._wrapped_jog = None
-            self._orig_execute = None
+        if self._wrapped_motion is not None:
+            self._wrapped_motion.enqueue_move = self._orig_enqueue
+            self._wrapped_motion = None
+            self._orig_enqueue = None
 
     def _follow_zmesh(self):
         if self._zmesh is not None and self._follow:
             return self._zmesh
         return None
 
-    def _execute_move_with_mesh(self, speed, dist=[], accel=0.):
+    JOG_SEG_LEN = 100.0
+
+    def _enqueue_move_with_mesh(self, speed, dist, accel=0.):
+        motion = self._wrapped_motion
         mesh = self._follow_zmesh()
         dist = list(dist)
         while len(dist) < 3:
             dist.append(0.)
-        if mesh is None or (abs(dist[0]) < 1e-12 and abs(dist[1]) < 1e-12):
-            self._orig_execute(speed, dist, accel)
+        if motion is None or mesh is None or (
+                abs(dist[0]) < 1e-12 and abs(dist[1]) < 1e-12):
+            self._orig_enqueue(speed, dist, accel)
             return
-        toolhead = self.printer.lookup_object('toolhead')
-        pos = toolhead.get_position()
-        x1 = pos[0] + dist[0]
-        y1 = pos[1] + dist[1]
-        dz = mesh.calc_z(x1, y1) - mesh.calc_z(pos[0], pos[1])
-        dist[2] += dz
-        logging.info(
-            'sample_mesh: jog follow dz=%.4f (%.2f,%.2f)->(%.2f,%.2f)',
-            dz, pos[0], pos[1], x1, y1)
-        self._orig_execute(speed, dist, accel)
+        if not (motion._queue or motion._worker_running):
+            self._hook_xy = None
+        if self._hook_xy is None:
+            toolhead = self.printer.lookup_object('toolhead')
+            pos = toolhead.get_position()
+            self._hook_xy = (pos[0], pos[1])
+        x0, y0 = self._hook_xy
+        total = max(abs(dist[0]), abs(dist[1]))
+        nseg = max(1, int(total / self.JOG_SEG_LEN + 0.999))
+        if nseg == 1:
+            dz = mesh.calc_z(x0 + dist[0], y0 + dist[1]) - mesh.calc_z(x0, y0)
+            dist[2] += dz
+            logging.info(
+                'sample_mesh: jog follow dz=%.4f (%.2f,%.2f)->(%.2f,%.2f)',
+                dz, x0, y0, x0 + dist[0], y0 + dist[1])
+            self._orig_enqueue(speed, dist, accel)
+        else:
+            for i in range(nseg):
+                f0 = i / nseg
+                f1 = (i + 1) / nseg
+                xi = x0 + dist[0] * f0
+                yi = y0 + dist[1] * f0
+                x1 = x0 + dist[0] * f1
+                y1 = y0 + dist[1] * f1
+                dz = mesh.calc_z(x1, y1) - mesh.calc_z(xi, yi)
+                seg = [dist[0] * (f1 - f0), dist[1] * (f1 - f0), dz]
+                logging.info(
+                    'sample_mesh: jog follow dz=%.4f '
+                    '(%.2f,%.2f)->(%.2f,%.2f) seg %d/%d',
+                    dz, xi, yi, x1, y1, i + 1, nseg)
+                self._orig_enqueue(speed, seg, accel)
+            logging.info(
+                'sample_mesh: %d segments queued (%.1f,%.1f) d=(%.1f,%.1f)',
+                nseg, x0, y0, dist[0], dist[1])
+        self._hook_xy = (x0 + dist[0], y0 + dist[1])
 
     # ------------------------------------------------------------------
     # commands
@@ -164,6 +237,7 @@ class SampleMesh:
         mesh = ZMesh(params, 'sample')
         mesh.build_mesh(matrix)
         self._install(bedmesh, mesh, follow=follow, grid=matrix)
+        self._hook_xy = None
         gcmd.respond_info(
             'sample_mesh: %dx%d grid active, bounds (%.1f,%.1f)-(%.1f,%.1f), '
             'z range %.2f..%.2f, follow=%s, algo=%s'
@@ -179,6 +253,7 @@ class SampleMesh:
         self._zmesh = None
         self._follow = False
         self._grid = None
+        self._hook_xy = None
         gcmd.respond_info('sample_mesh: cleared')
 
     cmd_SAMPLE_MESH_STATUS_help = 'Report sample mesh state'
@@ -203,8 +278,12 @@ class SampleMesh:
         if mesh is None:
             bedmesh.set_mesh(None)
             return
+        if follow and not self.jog_follow:
+            logging.info(
+                'sample_mesh: FOLLOW=1 requested but jog_follow is '
+                'disabled by config - installing scan-only mesh')
         self._zmesh = mesh
-        self._follow = follow
+        self._follow = follow and self.jog_follow
         self._grid = grid
         bedmesh.set_mesh(mesh)
 

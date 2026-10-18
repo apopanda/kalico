@@ -36,7 +36,7 @@ class JogMotion:
     def wait_idle(self, timeout=2.0):
         deadline = self.reactor.monotonic() + timeout
         while (
-            self._queue or self._worker_running
+                self._queue or self._worker_running
         ) and self.reactor.monotonic() < deadline:
             self.reactor.pause(self.reactor.monotonic() + 0.005)
 
@@ -80,6 +80,8 @@ class Jog:
         self._acceleration = 0.
         self._distance_vector = [0., 0., 0.]
         self._prev_jog_time = 0.
+        self._jog_base_toolhead = None
+        self._jog_base_kinfo = None
         self._motion = JogMotion(self.printer, self)
         ffi_main, ffi_lib = chelper.get_ffi()
         self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
@@ -94,14 +96,18 @@ class Jog:
                 ffi_lib.cartesian_stepper_alloc(b'z'), ffi_lib.free)
         }
         self._jog_swapped = False
+
     # implement default acceleration / speed taken from stepper
 
     def set_speed(self, speed):
         self._speed = speed
+
     def set_acceleration(self, acceleration):
         self._acceleration = acceleration
+
     def set_distance_vector(self, dist):
         self._distance_vector = dist
+
     def set_prev_jog_time(self, prev_jog_time):
         self._prev_jog_time = prev_jog_time
 
@@ -112,12 +118,16 @@ class Jog:
 
     def get_speed(self):
         return self._speed
+
     def get_acceleration(self):
         return self._acceleration
+
     def get_distance_vector(self):
         return self._distance_vector
+
     def get_prev_jog_time(self):
         return self._prev_jog_time
+
     def get_motion(self):
         return self._motion
 
@@ -137,6 +147,11 @@ class Jog:
                         stepper.set_stepper_kinematics(self.stepper_kinematics[axis.lower()])
                 stepper.set_trapq(self.trapq)
             self._jog_swapped = True
+            self._jog_base_toolhead = list(toolhead.get_position()[:3])
+            cinfob = [(s.get_name(), s.get_mcu_position() * s._step_dist)
+                      for s in steppers]
+            self._jog_base_kinfo = list(
+                toolhead.get_kinematics().calc_position(dict(cinfob)))[:3]
             self.set_toolhead_pos_from_steppers(steppers, toolhead.get_last_move_time())
 
         cp = toolhead.get_position()
@@ -174,14 +189,14 @@ class Jog:
         motion = self._motion
         reactor = motion.reactor
         flush_delay = (
-            DRIP_TIME + STEPCOMPRESS_FLUSH_TIME + toolhead.kin_flush_delay
+                DRIP_TIME + STEPCOMPRESS_FLUSH_TIME + toolhead.kin_flush_delay
         )
         while toolhead.print_time < move_end:
             motion._check_interrupt()
             curtime = reactor.monotonic()
             est_print_time = toolhead.mcu.estimated_print_time(curtime)
             wait_time = (
-                toolhead.print_time - est_print_time - flush_delay
+                    toolhead.print_time - est_print_time - flush_delay
             )
             if wait_time > 0.0:
                 reactor.pause(curtime + min(wait_time, 0.005))
@@ -195,10 +210,16 @@ class Jog:
             toolhead._advance_move_time(npt)
 
     def set_toolhead_pos_from_steppers(self, steppers, previous_jog_time):
+        base = getattr(self, '_jog_base_kinfo', None)
+        if base is None:
+            return
         toolhead = self.printer.lookup_object('toolhead')
         cinfo = [(s.get_name(), s.get_mcu_position() * s._step_dist) for s in
-                 steppers]  # _mcu_position_offset will be unreliable since it assumes that moves always complete
+                 steppers]
         kinfo = list(toolhead.get_kinematics().calc_position(dict(cinfo)))
+        for i in range(3):
+            kinfo[i] = self._jog_base_toolhead[i] + (
+                    kinfo[i] - base[i])
         kinfo.append(0.)  # todo handle extrusion stepper
         toolhead.set_position(kinfo)
 
@@ -226,6 +247,8 @@ class Jog:
             stepper.reset_pre_jog_trapq()
         self._jog_swapped = False
         self.set_toolhead_pos_from_steppers(steppers, toolhead.get_last_move_time())
+        self._jog_base_toolhead = None
+        self._jog_base_kinfo = None
 
 
 def normalize(distances=None):
@@ -251,7 +274,7 @@ def calc_moves_time(speed, accel, dist=None):
     if not accel or not magnitude:
         return axis_r, 0., magnitude / speed, speed
     max_cruise_v2 = magnitude * accel
-    if max_cruise_v2 < speed**2:
+    if max_cruise_v2 < speed ** 2:
         speed = math.sqrt(max_cruise_v2)
     accel_t = speed / accel
     accel_decel_d = accel_t * speed

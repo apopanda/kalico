@@ -136,6 +136,30 @@ class SampleMesh:
         return None
 
     JOG_SEG_LEN = 100.0
+    JOG_SEG_DZ = 15.0
+
+    def _jog_segments(self, mesh, x0, y0, dist):
+        total = (dist[0] * dist[0] + dist[1] * dist[1]) ** 0.5
+        if total < 1e-9:
+            return []
+        ux, uy = dist[0] / total, dist[1] / total
+        segs = []
+        cx, cy = x0, y0
+        remaining = total
+        while remaining > 1e-9:
+            L = remaining
+            while L > self.JOG_SEG_LEN:
+                dz = (mesh.calc_z(cx + ux * L, cy + uy * L)
+                      - mesh.calc_z(cx, cy))
+                if abs(dz) <= self.JOG_SEG_DZ:
+                    break
+                L = max(self.JOG_SEG_LEN, L / 2.0)
+            dz = mesh.calc_z(cx + ux * L, cy + uy * L) - mesh.calc_z(cx, cy)
+            segs.append((ux * L, uy * L, dz))
+            cx += ux * L
+            cy += uy * L
+            remaining -= L
+        return segs
 
     def _enqueue_move_with_mesh(self, speed, dist, accel=0.):
         motion = self._wrapped_motion
@@ -154,33 +178,22 @@ class SampleMesh:
             pos = toolhead.get_position()
             self._hook_xy = (pos[0], pos[1])
         x0, y0 = self._hook_xy
-        total = max(abs(dist[0]), abs(dist[1]))
-        nseg = max(1, int(total / self.JOG_SEG_LEN + 0.999))
-        if nseg == 1:
-            dz = mesh.calc_z(x0 + dist[0], y0 + dist[1]) - mesh.calc_z(x0, y0)
+        segs = self._jog_segments(mesh, x0, y0, dist)
+        if len(segs) <= 1:
+            dz = segs[0][2] if segs else 0.0
             dist[2] += dz
             logging.info(
                 'sample_mesh: jog follow dz=%.4f (%.2f,%.2f)->(%.2f,%.2f)',
                 dz, x0, y0, x0 + dist[0], y0 + dist[1])
             self._orig_enqueue(speed, dist, accel)
         else:
-            for i in range(nseg):
-                f0 = i / nseg
-                f1 = (i + 1) / nseg
-                xi = x0 + dist[0] * f0
-                yi = y0 + dist[1] * f0
-                x1 = x0 + dist[0] * f1
-                y1 = y0 + dist[1] * f1
-                dz = mesh.calc_z(x1, y1) - mesh.calc_z(xi, yi)
-                seg = [dist[0] * (f1 - f0), dist[1] * (f1 - f0), dz]
-                logging.info(
-                    'sample_mesh: jog follow dz=%.4f '
-                    '(%.2f,%.2f)->(%.2f,%.2f) seg %d/%d',
-                    dz, xi, yi, x1, y1, i + 1, nseg)
-                self._orig_enqueue(speed, seg, accel)
+            for sx, sy, dz in segs:
+                self._orig_enqueue(speed, [sx, sy, dz], accel)
             logging.info(
-                'sample_mesh: %d segments queued (%.1f,%.1f) d=(%.1f,%.1f)',
-                nseg, x0, y0, dist[0], dist[1])
+                'sample_mesh: %d adaptive segments (%.1f,%.1f) '
+                'd=(%.1f,%.1f) dz_total=%.2f',
+                len(segs), x0, y0, dist[0], dist[1],
+                sum(s[2] for s in segs))
         self._hook_xy = (x0 + dist[0], y0 + dist[1])
 
     # ------------------------------------------------------------------

@@ -69,8 +69,18 @@ class JogMotion:
         except JogInterrupted:
             logging.info("JOGDIAG: move abandoned on interrupt")
             self._queue = []
+            self._resync_toolhead_clock()
         finally:
             self._worker_running = False
+
+    def _resync_toolhead_clock(self):
+        toolhead = self.printer.lookup_object('toolhead')
+        est = toolhead.mcu.estimated_print_time(
+            self.reactor.monotonic()
+        )
+        if toolhead.print_time > est:
+            toolhead.print_time = est
+            toolhead.min_restart_time = 0.
 
 
 class Jog:

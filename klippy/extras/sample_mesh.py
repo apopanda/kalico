@@ -43,7 +43,7 @@ class SampleMesh:
         self._hook_xy = None
         self._orig_skp = None
         self._last_params = None
-        self._zref = 0.0
+        self._anchor_z = 0.0
         self._suspended = False
         self.gcode.register_command(
             'SAMPLE_MESH', self.cmd_SAMPLE_MESH, desc=self.cmd_SAMPLE_MESH_help)
@@ -56,6 +56,9 @@ class SampleMesh:
         self.gcode.register_command(
             'SAMPLE_MESH_SHIFT', self.cmd_SAMPLE_MESH_SHIFT,
             desc=self.cmd_SAMPLE_MESH_SHIFT_help)
+        self.gcode.register_command(
+            'SAMPLE_MESH_REANCHOR', self.cmd_SAMPLE_MESH_REANCHOR,
+            desc=self.cmd_SAMPLE_MESH_REANCHOR_help)
         self.gcode.register_command(
             'SAMPLE_MESH_SUSPEND', self.cmd_SAMPLE_MESH_SUSPEND,
             desc=self.cmd_SAMPLE_MESH_SUSPEND_help)
@@ -105,7 +108,7 @@ class SampleMesh:
     def _skp_clear_mesh(self, gcmd):
         if self._orig_skp is not None:
             self._orig_skp(gcmd)
-        rezeros = [gcmd.get_float(ax, None) is not None for ax in 'XYZ']
+        rezeros = [gcmd.get(ax, None) is not None for ax in 'XYZ']
         if not any(rezeros):
             logging.info(
                 'sample_mesh: SET_KINEMATIC_POSITION without X/Y/Z '
@@ -271,7 +274,7 @@ class SampleMesh:
         mesh = ZMesh(params, 'sample')
         mesh.build_mesh(matrix)
         self._install(bedmesh, mesh, follow=follow, grid=matrix)
-        self._zref = gcmd.get_float('ZREF', 0.0)
+        self._anchor_z = gcmd.get_float('ZREF', 0.0)
         self._hook_xy = None
         gcmd.respond_info(
             'sample_mesh: %dx%d grid active, bounds (%.1f,%.1f)-(%.1f,%.1f), '
@@ -292,20 +295,44 @@ class SampleMesh:
         self._hook_xy = None
         gcmd.respond_info('sample_mesh: cleared')
 
+    cmd_SAMPLE_MESH_REANCHOR_help = (
+        'Re-anchor the mesh plane to the current position (or Z=...) - '
+        'run after jogging to true focus')
+
+    def cmd_SAMPLE_MESH_REANCHOR(self, gcmd):
+        if self._zmesh is None or self._grid is None:
+            raise gcmd.error('sample_mesh: no mesh active to re-anchor')
+        target = gcmd.get_float('Z', None)
+        try:
+            toolhead = self.printer.lookup_object('toolhead')
+            pos = toolhead.get_position()
+            surface = (
+                self._anchor_z + self._zmesh.calc_z(pos[0], pos[1]))
+        except Exception as e:
+            raise gcmd.error(
+                'sample_mesh: cannot read position: %s' % str(e))
+        if target is None:
+            target = pos[2]
+        delta = target - surface
+        try:
+            zr = self._shift_mesh(delta)
+        except RuntimeError as e:
+            raise gcmd.error('sample_mesh: %s' % str(e))
+        gcmd.respond_info(
+            'sample_mesh: re-anchored plane to %.2f (grid %+.2f), '
+            'z range %.2f..%.2f' % (target, delta, zr[0], zr[1]))
+
     cmd_SAMPLE_MESH_SHIFT_help = 'Shift the active sample mesh by a z delta'
 
-    def cmd_SAMPLE_MESH_SHIFT(self, gcmd):
-        bedmesh = self.printer.lookup_object('bed_mesh', None)
-        if self._zmesh is None or self._grid is None or bedmesh is None:
-            raise gcmd.error('sample_mesh: no mesh active to shift')
-        delta = gcmd.get_float('DELTA')
+    def _shift_mesh(self, delta):
+        if self._zmesh is None or self._grid is None:
+            raise RuntimeError('no mesh active to shift')
         if delta == 0:
-            gcmd.respond_info('sample_mesh: zero shift, mesh unchanged')
-            return
+            return None
         shift_max = self.max_z_range
         if abs(delta) > shift_max:
-            raise gcmd.error(
-                'sample_mesh: shift %.1f exceeds sanity limit %.1f'
+            raise RuntimeError(
+                'shift %.1f exceeds sanity limit %.1f'
                 % (abs(delta), shift_max))
         matrix = [[z + delta for z in row] for row in self._grid]
         zmin = min(min(row) for row in matrix)
@@ -323,11 +350,24 @@ class SampleMesh:
         }
         mesh = ZMesh(params, 'sample')
         mesh.build_mesh(matrix)
+        bedmesh = self.printer.lookup_object('bed_mesh', None)
+        anchor = self._anchor_z
         self._install(bedmesh, mesh, follow=self._follow, grid=matrix)
-        self._zref += delta
+        self._anchor_z = anchor
+        return zmin, zmax
+
+    def cmd_SAMPLE_MESH_SHIFT(self, gcmd):
+        delta = gcmd.get_float('DELTA')
+        try:
+            zr = self._shift_mesh(delta)
+        except RuntimeError as e:
+            raise gcmd.error('sample_mesh: %s' % str(e))
+        if zr is None:
+            gcmd.respond_info('sample_mesh: zero shift, mesh unchanged')
+            return
         gcmd.respond_info(
             'sample_mesh: shifted by %.2f, z range %.2f..%.2f'
-            % (delta, zmin, zmax))
+            % (delta, zr[0], zr[1]))
 
     cmd_SAMPLE_MESH_STATUS_help = 'Report sample mesh state'
 
@@ -336,13 +376,21 @@ class SampleMesh:
             gcmd.respond_info('sample_mesh: no mesh active')
             return
         zmin, zmax = self._zmesh.get_z_range()
+        try:
+            toolhead = self.printer.lookup_object('toolhead')
+            tpos = toolhead.get_position()
+            surface = (
+                self._anchor_z + self._zmesh.calc_z(tpos[0], tpos[1]))
+            zref = tpos[2] - surface
+        except Exception:
+            zref = float('nan')
         gcmd.respond_info(
             'sample_mesh: profile=%s bounds=(%.1f,%.1f)-(%.1f,%.1f) '
             'z range %.2f..%.2f follow=%s zref=%.2f'
             % (self._zmesh.get_profile_name(),
                self._zmesh.mesh_x_min, self._zmesh.mesh_y_min,
                self._zmesh.mesh_x_max, self._zmesh.mesh_y_max,
-               zmin, zmax, self._follow, self._zref))
+               zmin, zmax, self._follow, zref))
 
     cmd_SAMPLE_MESH_SUSPEND_help = 'Temporarily disable the mesh transform'
 
@@ -368,18 +416,32 @@ class SampleMesh:
         logging.info('sample_mesh: transform resumed')
 
     def get_status(self, eventtime=None):
-        zref = self._zref if self._zmesh is not None else None
+        if self._zmesh is None:
+            return {
+                "zref": None, "active": False, "follow": False,
+                "surface_here": None,
+            }
+        zref = surface_here = None
+        try:
+            toolhead = self.printer.lookup_object('toolhead')
+            pos = toolhead.get_position()
+            surface_here = (
+                self._anchor_z + self._zmesh.calc_z(pos[0], pos[1]))
+            zref = pos[2] - surface_here
+        except Exception:
+            pass
         return {
             "zref": zref,
-            "active": self._zmesh is not None,
+            "active": True,
             "follow": self._follow,
+            "surface_here": surface_here,
         }
 
     def _install(self, bedmesh, mesh, follow=False, grid=None):
         self._zmesh = None
         self._follow = False
         self._grid = None
-        self._zref = 0.0
+        self._anchor_z = 0.0
         if mesh is None:
             bedmesh.set_mesh(None)
             return

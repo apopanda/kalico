@@ -43,6 +43,8 @@ class SampleMesh:
         self._hook_xy = None
         self._orig_skp = None
         self._last_params = None
+        self._mask = None
+        self._fade = 87.5
         self._anchor_z = 0.0
         self._suspended = False
         self.gcode.register_command(
@@ -131,6 +133,40 @@ class SampleMesh:
             self._wrapped_motion = None
             self._orig_enqueue = None
 
+    def _mask_bit(self, x, y):
+        m = self._mask
+        if m is None or self._grid is None or self._zmesh is None:
+            return True
+        cols = len(self._grid[0])
+        fx = (x - self._zmesh.mesh_x_min) / (
+            self._zmesh.mesh_x_max - self._zmesh.mesh_x_min) * (cols - 1)
+        fy = (y - self._zmesh.mesh_y_min) / (
+            self._zmesh.mesh_y_max - self._zmesh.mesh_y_min) * (len(self._grid) - 1)
+        i = max(0, min(cols - 1, int(round(fx))))
+        j = max(0, min(len(self._grid) - 1, int(round(fy))))
+        return m[j * cols + i]
+
+    def _fade_weight(self, x, y, bit):
+        if bit:
+            return 1.0
+        if self._mask is None or self._zmesh is None or self._fade <= 0:
+            return 0.0
+        cols = len(self._grid[0])
+        cell_x = (self._zmesh.mesh_x_max - self._zmesh.mesh_x_min) / (cols - 1)
+        cell_y = (self._zmesh.mesh_y_max - self._zmesh.mesh_y_min) / (
+            len(self._grid) - 1)
+        best = 0.0
+        f = self._fade
+        for dx in (-f, -f / 2, 0, f / 2, f):
+            for dy in (-f, -f / 2, 0, f / 2, f):
+                sx, sy = x + dx, y + dy
+                if not self._mask_bit(sx, sy):
+                    continue
+                d = math.hypot(dx, dy)
+                w = max(0.0, 1.0 - d / f)
+                best = max(best, w)
+        return best
+
     def _follow_zmesh(self):
         if self._suspended:
             return None
@@ -208,8 +244,8 @@ class SampleMesh:
         bedmesh = self.printer.lookup_object('bed_mesh', None)
         if bedmesh is None:
             raise gcmd.error('sample_mesh: [bed_mesh] is not loaded')
-        cols = gcmd.get_int('COLS', 3, minval=2, maxval=15)
-        rows = gcmd.get_int('ROWS', 3, minval=2, maxval=15)
+        cols = gcmd.get_int('COLS', 3, minval=2, maxval=200)
+        rows = gcmd.get_int('ROWS', 3, minval=2, maxval=200)
         min_x = gcmd.get_float('MIN_X')
         max_x = gcmd.get_float('MAX_X')
         min_y = gcmd.get_float('MIN_Y')
@@ -271,6 +307,17 @@ class SampleMesh:
             'mesh_y_pps': pps,
         }
         self._last_params = dict(params)
+        mask_s = gcmd.get('MASK', None)
+        if mask_s is not None:
+            mask_s = mask_s.replace('\n', '').replace(' ', '')
+            if len(mask_s) != len(matrix) * len(matrix[0]):
+                raise gcmd.error(
+                    'sample_mesh: MASK length %d != COLS*ROWS %d'
+                    % (len(mask_s), len(matrix) * len(matrix[0])))
+            self._mask = [c == '1' for c in mask_s]
+        else:
+            self._mask = None
+        self._fade = gcmd.get_float('FADE', 87.5, above=0.)
         mesh = ZMesh(params, 'sample')
         mesh.build_mesh(matrix)
         self._install(bedmesh, mesh, follow=follow, grid=matrix)
@@ -433,6 +480,8 @@ class SampleMesh:
         return {
             "zref": zref,
             "active": True,
+            "masked": self._mask is not None,
+            "fade": self._fade,
             "follow": self._follow,
             "surface_here": surface_here,
         }
